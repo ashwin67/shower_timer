@@ -1,5 +1,6 @@
 // Shower timer
 #include "dht_nonblocking.h"
+#include "pitches.h"
 
 int motion_sensor_input_pin = 7;
 int motion_sensor_state = LOW;
@@ -14,7 +15,43 @@ int buzzer = 13;
 void setup() {
   pinMode(motion_sensor_input_pin, INPUT);
   pinMode(buzzer,OUTPUT);
-  Serial.begin(9600);
+  
+  TCCR1B |= (1 << WGM12) | (1 << CS10);  // Set up timer with and CTC mode and no prescaler
+  TCNT1 = 0;                             // Initialize counter
+  OCR1A = 27256;                         // This should be set to (16,000,000 / (prescaler * desired interrupt frequency)) - 1
+  TIMSK1 |= (1 << OCIE1A);               // Disable compare interrupt
+  sei();                                 // Enable global interrupts
+
+  Serial.begin(115200);
+}
+
+int no_of_notes = 16;
+int melody[] = {NOTE_C5, NOTE_D5, NOTE_E5, NOTE_F5, NOTE_G5, NOTE_A5, NOTE_B5, NOTE_C6, NOTE_C6, NOTE_B5, NOTE_A5, NOTE_G5, NOTE_F5, NOTE_E5, NOTE_D5, NOTE_C5};
+int tick = 0;
+int interval = 500;
+int current_note = 0;
+bool sound_enabled = false;
+
+ISR(TIMER1_COMPA_vect) {
+  if (sound_enabled)
+  {
+    tick++;
+  }
+  else if (!sound_enabled)
+  {
+    tick = 1;
+    current_note = 0;
+    digitalWrite(buzzer, LOW);
+  }
+  if (tick % interval == 0)
+  {
+    tone(buzzer, melody[current_note], interval);
+    tick = 0;
+    current_note++;
+  }
+  if (current_note == no_of_notes) {
+    current_note = 0;
+  }
 }
 
 static bool measure_environment( float *temperature, float *humidity )
@@ -33,41 +70,8 @@ static bool measure_environment( float *temperature, float *humidity )
   return( false );
 }
 
-unsigned long previousMillis = 0; 
-unsigned long interval = 1; 
-int i = 0;
-bool isHigh = false;
-
-// TODO: This doesn't work yet as the beep_buzzer is not getting called regularly due to the delay in measure_environment
-static void beep_buzzer()
-{
-  unsigned long currentMillis = millis();
-
-  if (currentMillis - previousMillis >= interval) {
-    previousMillis = currentMillis;
-    i++;
-    if (i < 500) {
-      Serial.println("Speaker on");
-      Serial.println(currentMillis);
-      if (isHigh) {
-        digitalWrite(buzzer, LOW);
-        isHigh = false;
-      } else {
-        digitalWrite(buzzer, HIGH);
-        isHigh = true;
-      }
-    }
-    else if (i < 1000) {
-      Serial.println("Speaker off");
-      Serial.println(currentMillis);
-      digitalWrite(buzzer, LOW);
-      isHigh = false;
-    }
-    else {
-      i = 0;
-    }
-  }
-}
+float humidity_hyst_high = 60.0;
+float humidity_hyst_low = 50.0;
 
 void loop(){
   motion_sensor_val = digitalRead(motion_sensor_input_pin);
@@ -95,5 +99,12 @@ void loop(){
     Serial.println( "%" );
   }
 
-  beep_buzzer();
+  if (humidity > humidity_hyst_high) 
+  {
+    sound_enabled = true;
+  }
+  else if (humidity < humidity_hyst_low)
+  {
+    sound_enabled = false;
+  }
 }
