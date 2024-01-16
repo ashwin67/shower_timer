@@ -2,23 +2,32 @@
 #include "dht_nonblocking.h"
 #include "pitches.h"
 
-int motion_sensor_input_pin = 7;
-int motion_sensor_state = LOW;
-int motion_sensor_val = 0;
+int  soundSensorAnalogPin = A0;    // Select the Arduino input pin to accept the Sound Sensor's analog output 
+int  soundSensorDigitalPin = 9;    // Select the Arduino input pin to accept the Sound Sensor's digital output
+int  soundAnalogValue = 0;         // Define variable to store the analog value coming from the Sound Sensor
+int  soundDigitalValue;            // Define variable to store the digital value coming from the Sound Sensor
+int  soundLed = 13;                // Define LED port; this is the LED built in to the Arduino (labled L)
 
 #define DHT_SENSOR_TYPE DHT_TYPE_11
 static const int DHT_SENSOR_PIN = 8;
 DHT_nonblocking dht_sensor( DHT_SENSOR_PIN, DHT_SENSOR_TYPE );
  
-int buzzer = 13;
+int buzzer = 12;
 
 void setup() {
-  pinMode(motion_sensor_input_pin, INPUT);
   pinMode(buzzer,OUTPUT);
-  
+
+  pinMode(soundSensorDigitalPin,INPUT);
+  pinMode(soundLed,OUTPUT);
+
+  TCCR0B |= (1 << WGM02) | (1 << CS01) | (1 << CS00);  // Set up timer with and CTC mode and CLK/64 prescaler
+  TCNT0 = 0;                                           // Initialize counter
+  OCR0A = 24999;                                       // This should be set to (16,000,000 / (prescaler * desired interrupt frequency)) - 1 -> 10 Hz
+  TIMSK0 |= (1 << OCIE0A);                             // Disable compare interrupt
+
   TCCR1B |= (1 << WGM12) | (1 << CS10);  // Set up timer with and CTC mode and no prescaler
   TCNT1 = 0;                             // Initialize counter
-  OCR1A = 27256;                         // This should be set to (16,000,000 / (prescaler * desired interrupt frequency)) - 1
+  OCR1A = 27256;                         // This should be set to (16,000,000 / (prescaler * desired interrupt frequency)) - 1 -> 587 Hz
   TIMSK1 |= (1 << OCIE1A);               // Disable compare interrupt
   sei();                                 // Enable global interrupts
 
@@ -54,6 +63,21 @@ ISR(TIMER1_COMPA_vect) {
   }
 }
 
+ISR(TIMER0_COMPA_vect) {
+  soundAnalogValue = analogRead(soundSensorAnalogPin);
+  soundDigitalValue=digitalRead(soundSensorDigitalPin);
+  Serial.println(soundAnalogValue);
+
+  if(soundDigitalValue==HIGH) 
+  {
+    digitalWrite(soundLed,HIGH);
+  }
+  else
+  {
+    digitalWrite(soundLed,LOW);
+  }
+}
+
 static bool measure_environment( float *temperature, float *humidity )
 {
   static unsigned long measurement_timestamp = millis( );
@@ -74,21 +98,8 @@ float humidity_hyst_high = 60.0;
 float humidity_hyst_low = 50.0;
 
 void loop(){
-  motion_sensor_val = digitalRead(motion_sensor_input_pin);
   float temperature;
   float humidity;
-
-  if (motion_sensor_val == HIGH) {
-    if (motion_sensor_state == LOW) {
-      Serial.println("Motion detected!");
-      motion_sensor_state = HIGH;
-    }
-  } else {
-    if (motion_sensor_state == HIGH){
-      Serial.println("Motion ended!");
-      motion_sensor_state = LOW;
-    }
-  }
 
   if( measure_environment( &temperature, &humidity ) == true )
   {
