@@ -20,102 +20,174 @@ void setup() {
   pinMode(soundSensorDigitalPin,INPUT);
   pinMode(soundLed,OUTPUT);
 
-  TCCR0B |= (1 << WGM02) | (1 << CS01) | (1 << CS00);  // Set up timer with and CTC mode and CLK/64 prescaler
-  TCNT0 = 0;                                           // Initialize counter
-  OCR0A = 24999;                                       // This should be set to (16,000,000 / (prescaler * desired interrupt frequency)) - 1 -> 10 Hz
-  TIMSK0 |= (1 << OCIE0A);                             // Disable compare interrupt
+  TCCR1A = 0;
+  TCCR1B = (1 << WGM12) | (1 << CS11) | (1 << CS10);    // Set up timer with and CTC mode and /64 prescaler
+  TCNT1 = 0;                                            // Initialize counter
+  OCR1A = 2499;                                         // This should be set to (16,000,000 / (prescaler * desired interrupt frequency)) - 1 -> 100 Hz
+  TIMSK1 |= (1 << OCIE1A);                              // Disable compare interrupt
 
-  TCCR1B |= (1 << WGM12) | (1 << CS10);  // Set up timer with and CTC mode and no prescaler
-  TCNT1 = 0;                             // Initialize counter
-  OCR1A = 27256;                         // This should be set to (16,000,000 / (prescaler * desired interrupt frequency)) - 1 -> 587 Hz
-  TIMSK1 |= (1 << OCIE1A);               // Disable compare interrupt
-  sei();                                 // Enable global interrupts
+  sei();                                                // Enable global interrupts
 
-  Serial.begin(115200);
+  Serial.begin(9600);
 }
 
-int no_of_notes = 16;
-int melody[] = {NOTE_C5, NOTE_D5, NOTE_E5, NOTE_F5, NOTE_G5, NOTE_A5, NOTE_B5, NOTE_C6, NOTE_C6, NOTE_B5, NOTE_A5, NOTE_G5, NOTE_F5, NOTE_E5, NOTE_D5, NOTE_C5};
-int tick = 0;
-int interval = 500;
-int current_note = 0;
 bool sound_enabled = false;
+bool shower_timeout_enabled = false;
 
-ISR(TIMER1_COMPA_vect) {
-  if (sound_enabled)
-  {
-    tick++;
-  }
-  else if (!sound_enabled)
-  {
-    tick = 1;
-    current_note = 0;
-    digitalWrite(buzzer, LOW);
-  }
-  if (tick % interval == 0)
-  {
-    tone(buzzer, melody[current_note], interval);
-    tick = 0;
-    current_note++;
-  }
-  if (current_note == no_of_notes) {
-    current_note = 0;
-  }
-}
+int humidity_measurement_timer = 0;
+bool humidity_measurement_timer_ding = false;
+int sound_measurement_timer = 0;
+bool sound_measurement_timer_ding = false;
+int tone_timer = 0;
+bool tone_timer_ding = false;
+int shower_timer = 0;
+bool shower_timer_ding = false;
 
-ISR(TIMER0_COMPA_vect) {
-  soundAnalogValue = analogRead(soundSensorAnalogPin);
-  soundDigitalValue=digitalRead(soundSensorDigitalPin);
-  Serial.println(soundAnalogValue);
+// Following timeout are in 10ms units
+const int HUMIDITY_MEASUREMENT_TIMEOUT = 400;
+const int SOUND_MEASUREMENT_TIMEOUT = 1;
+const int TONE_TIMEOUT = 50;
+const int SHOWER_TIMEOUT = 10*100; //10*60*100;
+const int LAST_SOUND_THRESHOLD_IN_TICKS = 10*100;
 
-  if(soundDigitalValue==HIGH) 
+unsigned long current_tick = 0;
+
+ISR(TIMER1_COMPA_vect) 
+{
+  current_tick++;
+  
+  humidity_measurement_timer++;
+  if (humidity_measurement_timer >= HUMIDITY_MEASUREMENT_TIMEOUT)
   {
-    digitalWrite(soundLed,HIGH);
+    humidity_measurement_timer = 0;
+    humidity_measurement_timer_ding = true;
+  }
+
+  sound_measurement_timer++;
+  if (sound_measurement_timer >= SOUND_MEASUREMENT_TIMEOUT)
+  {
+    sound_measurement_timer = 0;
+    sound_measurement_timer_ding = true;
+  }
+
+  if (shower_timeout_enabled)
+  {
+    shower_timer++;
   }
   else
   {
-    digitalWrite(soundLed,LOW);
+    shower_timer = 0;
+    shower_timer_ding = false;
   }
-}
-
-static bool measure_environment( float *temperature, float *humidity )
-{
-  static unsigned long measurement_timestamp = millis( );
-
-  /* Measure once every four seconds. */
-  if( millis( ) - measurement_timestamp > 3000ul )
+  if (shower_timer >= SHOWER_TIMEOUT)
   {
-    if( dht_sensor.measure( temperature, humidity ) == true )
-    {
-      measurement_timestamp = millis( );
-      return( true );
-    }
-  }
-  return( false );
-}
-
-float humidity_hyst_high = 60.0;
-float humidity_hyst_low = 50.0;
-
-void loop(){
-  float temperature;
-  float humidity;
-
-  if( measure_environment( &temperature, &humidity ) == true )
-  {
-    Serial.print( "T = " );
-    Serial.print( temperature, 1 );
-    Serial.print( " deg. C, H = " );
-    Serial.print( humidity, 1 );
-    Serial.println( "%" );
-  }
-
-  if (humidity > humidity_hyst_high) 
-  {
+    shower_timer_ding = true;
     sound_enabled = true;
   }
-  else if (humidity < humidity_hyst_low)
+  else
   {
     sound_enabled = false;
+  }
+
+  if (sound_enabled)
+  {
+    tone_timer++;
+  }
+  else
+  {
+    tone_timer = 0;
+    tone_timer_ding = false;
+  }
+  if (tone_timer >= TONE_TIMEOUT)
+  {
+    tone_timer = 0;
+    tone_timer_ding = true;
+  }
+}
+
+float humidity_hyst_high = 80.0;
+float humidity_hyst_low = 60.0;
+float temperature;
+float humidity;
+unsigned long last_sound_detected_tick = 0;
+bool sound_detected_recently = false;
+
+int no_of_notes = 16;
+int melody[] = {NOTE_C5, NOTE_D5, NOTE_E5, NOTE_F5, NOTE_G5, NOTE_A5, NOTE_B5, NOTE_C6, NOTE_C6, NOTE_B5, NOTE_A5, NOTE_G5, NOTE_F5, NOTE_E5, NOTE_D5, NOTE_C5};
+int tone_interval = 500;
+int current_note = 0;
+
+void printData(String label, float value) {
+  Serial.print( "Time : " );
+  Serial.print( current_tick, 1 );
+  Serial.print( label + " = " );
+  Serial.print( value, 1 );
+  Serial.println( "%" );
+}
+
+void loop()
+{
+  if (humidity_measurement_timer_ding)
+  {
+    if(dht_sensor.measure(&temperature, &humidity ))
+    {
+      humidity_measurement_timer_ding = false;
+      printData("Hum", humidity);
+    }
+  }
+
+  if (sound_measurement_timer_ding)
+  {
+    soundAnalogValue = analogRead(soundSensorAnalogPin);
+    soundDigitalValue=digitalRead(soundSensorDigitalPin);
+    sound_measurement_timer_ding = false;
+    if(soundDigitalValue==HIGH)
+    {
+      printData("Snd", soundAnalogValue);
+      last_sound_detected_tick = current_tick;
+      digitalWrite(soundLed,HIGH);
+    }
+    else
+    {
+      digitalWrite(soundLed,LOW);
+    }
+  }
+
+  if ((current_tick > LAST_SOUND_THRESHOLD_IN_TICKS) && (current_tick - last_sound_detected_tick <= LAST_SOUND_THRESHOLD_IN_TICKS))
+  {
+    sound_detected_recently = true;
+  } else 
+  {
+    sound_detected_recently = false;
+  }
+
+
+  if ((sound_detected_recently) || (humidity > humidity_hyst_high))
+  {
+    printData("Recent", 1);
+    shower_timeout_enabled = true;
+  }
+
+  if (!sound_detected_recently && (humidity < humidity_hyst_low))
+  {
+    shower_timeout_enabled = false;
+  }
+
+  if (!sound_enabled)
+  {
+    current_note = 0;
+    digitalWrite(buzzer, LOW);
+  }
+  else
+  {
+    if (tone_timer_ding)
+    {
+      tone(buzzer, melody[current_note], tone_interval);
+      current_note++;
+      tone_timer_ding = false;
+    }
+    if (current_note >= no_of_notes) {
+      current_note = 0;
+    }
   }
 }
